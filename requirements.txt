@@ -1,2 +1,7 @@
-roboflow
+matplotlib
+numpy
+pillow
 python-dotenv
+roboflow
+torch
+torchvision
