@@ -1,2 +1,3 @@
 Dataset/
 .env
+__pycache__/
