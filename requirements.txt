@@ -8,4 +8,5 @@ torchvision==0.17.0+cu118
 torchaudio==2.2.0+cu118
 pycocotools
 onnx
+onnxruntime
 -f https://download.pytorch.org/whl/torch_stable.html
