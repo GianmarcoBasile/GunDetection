@@ -1,6 +1,7 @@
 albumentations
 matplotlib
 numpy
+pandas
 pillow
 python-dotenv
 roboflow
@@ -10,4 +11,5 @@ torchaudio==2.2.0+cu118
 pycocotools
 onnx
 onnxruntime
+seaborn
 -f https://download.pytorch.org/whl/torch_stable.html
