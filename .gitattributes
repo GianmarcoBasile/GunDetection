@@ -1,0 +1,4 @@
+Model/faster_rcnn.onnx filter=lfs diff=lfs merge=lfs -text
+Model/faster_rcnn_higher_lr.onnx filter=lfs diff=lfs merge=lfs -text
+Model/faster_rcnn_data_augmentation.onnx filter=lfs diff=lfs merge=lfs -text
+Model/ filter=lfs diff=lfs merge=lfs -text

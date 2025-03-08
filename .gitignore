@@ -1,0 +1,4 @@
+Dataset/Images/
+Dataset/Annotations/
+.env
+__pycache__/
