@@ -5,6 +5,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import os
 import torch
+import argparse
 
 class GunDetector:
     def __init__(self, model_path):
@@ -33,18 +34,11 @@ class GunDetector:
         if isinstance(image, np.ndarray):
             image = Image.fromarray(image)
         
-        # Resize mantenendo aspect ratio
-        ratio = min(self.target_size[0] / image.size[0], self.target_size[1] / image.size[1])
-        new_size = tuple([int(x * ratio) for x in image.size])
-        image = image.resize(new_size, Image.BILINEAR)
-        
-        # Padding per arrivare a target_size
-        new_image = Image.new("RGB", self.target_size, (0, 0, 0))
-        new_image.paste(image, ((self.target_size[0] - new_size[0]) // 2,
-                              (self.target_size[1] - new_size[1]) // 2))
+        # Resize diretto a target_size come nel training
+        image = image.resize(self.target_size, Image.BILINEAR)
         
         # Converti in tensor e normalizza
-        image = torch.from_numpy(np.array(new_image)).permute(2, 0, 1).float() / 255.0
+        image = torch.from_numpy(np.array(image)).permute(2, 0, 1).float() / 255.0
         
         # Espandi le dimensioni per il batch
         image = image.unsqueeze(0)
@@ -73,24 +67,56 @@ class GunDetector:
             outputs = self.session.run(None, {self.input_name: input_image})
             
             boxes = outputs[0]
+            scores = outputs[1]
+            labels = outputs[2]
+            
             if boxes is not None and isinstance(boxes, np.ndarray) and boxes.size > 0:
-                # Calcola il fattore di scala e l'offset del padding
-                ratio = min(self.target_size[0] / original_size[0], self.target_size[1] / original_size[1])
-                new_size = [int(x * ratio) for x in original_size]
-                pad_x = (self.target_size[0] - new_size[0]) // 2
-                pad_y = (self.target_size[1] - new_size[1]) // 2
+                # Riscala le box alle dimensioni originali
+                ratio_x = original_size[0] / self.target_size[0]
+                ratio_y = original_size[1] / self.target_size[1]
                 
-                # Rimuovi il padding e riscala le box
                 scaled_boxes = boxes.copy()
-                scaled_boxes[:, [0, 2]] -= pad_x  # rimuovi padding x
-                scaled_boxes[:, [1, 3]] -= pad_y  # rimuovi padding y
-                scaled_boxes = scaled_boxes / ratio  # riscala alle dimensioni originali
+                scaled_boxes[:, [0, 2]] *= ratio_x  # riscala x
+                scaled_boxes[:, [1, 3]] *= ratio_y  # riscala y
                 
                 # Filtra per threshold
-                mask = outputs[1] >= threshold
+                mask = scores >= threshold
                 scaled_boxes = scaled_boxes[mask]
-                filtered_scores = outputs[1][mask]
-                filtered_labels = outputs[2][mask]
+                filtered_scores = scores[mask]
+                filtered_labels = labels[mask]
+                
+                # Applica NMS
+                if len(scaled_boxes) > 0:
+                    # Calcola le aree e gli IoU
+                    areas = (scaled_boxes[:, 2] - scaled_boxes[:, 0]) * (scaled_boxes[:, 3] - scaled_boxes[:, 1])
+                    order = filtered_scores.argsort()[::-1]
+                    keep = []
+                    
+                    while order.size > 0:
+                        i = order[0]
+                        keep.append(i)
+                        
+                        if order.size == 1:
+                            break
+                            
+                        # Calcola IoU con il box corrente
+                        xx1 = np.maximum(scaled_boxes[i, 0], scaled_boxes[order[1:], 0])
+                        yy1 = np.maximum(scaled_boxes[i, 1], scaled_boxes[order[1:], 1])
+                        xx2 = np.minimum(scaled_boxes[i, 2], scaled_boxes[order[1:], 2])
+                        yy2 = np.minimum(scaled_boxes[i, 3], scaled_boxes[order[1:], 3])
+                        
+                        w = np.maximum(0.0, xx2 - xx1)
+                        h = np.maximum(0.0, yy2 - yy1)
+                        inter = w * h
+                        
+                        ovr = inter / (areas[i] + areas[order[1:]] - inter)
+                        inds = np.where(ovr <= 0.1)[0]
+                        order = order[inds + 1]
+                    
+                    # Mantieni solo i box selezionati
+                    scaled_boxes = scaled_boxes[keep]
+                    filtered_scores = filtered_scores[keep]
+                    filtered_labels = filtered_labels[keep]
                 
                 print(f"\nModello: {self.model_path}")
                 print(f"Forma dell'output: {[out.shape for out in outputs]}")
@@ -151,7 +177,56 @@ class GunDetector:
         
         return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
+    def nms(self, boxes, scores, iou_threshold=0.2):
+        """
+        Applica Non-Maximum Suppression ai box rilevati.
+        
+        Args:
+            boxes (np.ndarray): Array di box in formato [x1, y1, x2, y2]
+            scores (np.ndarray): Array di score di confidenza
+            iou_threshold (float): Soglia IoU per considerare i box sovrapposti
+            
+        Returns:
+            np.ndarray: Indici dei box da mantenere
+        """
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 2]
+        y2 = boxes[:, 3]
+        
+        areas = (x2 - x1) * (y2 - y1)
+        order = scores.argsort()[::-1]
+        
+        keep = []
+        while order.size > 0:
+            i = order[0]
+            keep.append(i)
+            
+            if order.size == 1:
+                break
+                
+            xx1 = np.maximum(x1[i], x1[order[1:]])
+            yy1 = np.maximum(y1[i], y1[order[1:]])
+            xx2 = np.minimum(x2[i], x2[order[1:]])
+            yy2 = np.minimum(y2[i], y2[order[1:]])
+            
+            w = np.maximum(0.0, xx2 - xx1)
+            h = np.maximum(0.0, yy2 - yy1)
+            inter = w * h
+            
+            # Calcola l'area di sovrapposizione relativa
+            ovr = inter / np.minimum(areas[i], areas[order[1:]])
+            inds = np.where(ovr <= iou_threshold)[0]
+            order = order[inds + 1]
+            
+        return np.array(keep)
+
 def main():
+    # Parser per gli argomenti della riga di comando
+    parser = argparse.ArgumentParser(description='Esegui il rilevamento delle armi in un immagine.')
+    parser.add_argument('image_path', type=str, help='Percorso all\'immagine da analizzare')
+    args = parser.parse_args()
+
     # Percorsi dei modelli
     model_paths = [
         "Model/faster_rcnn.onnx",
@@ -159,11 +234,8 @@ def main():
         "Model/faster_rcnn_higher_lr.onnx"
     ]
     
-    # Carica un'immagine di test
-    test_image_path = "Dataset/Test/test_image.png"
-    
-    if not os.path.exists(test_image_path):
-        print(f"Immagine di test non trovata: {test_image_path}")
+    if not os.path.exists(args.image_path):
+        print(f"Immagine non trovata: {args.image_path}")
         return
     
     # Prepara il subplot
@@ -180,7 +252,7 @@ def main():
             detector = GunDetector(model_path)
             
             # Esegui il rilevamento
-            result_image, boxes, scores, labels = detector.detect(test_image_path)
+            result_image, boxes, scores, labels = detector.detect(args.image_path)
             
             # Aggiungi al subplot
             axes[idx].imshow(result_image)
